@@ -42,10 +42,6 @@ module Liquid
       @is_for_loop
     end
 
-    def inherit_context?
-      @inherit_context
-    end
-
     def render_to_output_buffer(context, output)
       render_tag(context, output)
     end
@@ -77,20 +73,21 @@ module Liquid
           inner_context.partial = true
         end
 
-        if is_inline && inherit_context?
-          context.scopes.each do |scope|
-            scope.each do |key, value|
-              inner_context[key] = value
+        inner_context['forloop'] = forloop if forloop
+
+        @attributes.each do |key, value|
+          if key == "..." && is_inline
+            context.scopes.each do |scope|
+              scope.each do |k, v|
+                inner_context[k] = v
+              end
             end
+          else
+            inner_context[key] = context.evaluate(value)
           end
         end
 
-        @attributes.each do |key, value|
-          inner_context[key] = context.evaluate(value)
-        end
-
         inner_context[context_variable_name] = var unless var.nil?
-        inner_context['forloop'] = forloop if forloop
 
         partial.render_to_output_buffer(inner_context, output)
         forloop&.send(:increment!)
@@ -129,19 +126,17 @@ module Liquid
       # optional comma
       p.consume?(:comma)
 
-      @inherit_context = false
-      # ... inline snippets syntax
-      if p.consume?(:dotdotdot)
-        p.consume?(:comma)
-
-        @inherit_context = true
-      end
-
       @attributes = {}
-      while p.look(:id)
-        key = p.consume
-        p.consume(:colon)
-        @attributes[key] = safe_parse_expression(p)
+      while p.look(:dotdotdot) || p.look(:id)
+        if p.consume?(:dotdotdot)
+          @attributes.delete("...")
+          @attributes["..."] = true
+        else
+          key = p.consume
+          p.consume(:colon)
+          @attributes.delete(key)
+          @attributes[key] = safe_parse_expression(p)
+        end
         p.consume?(:comma) # optional comma
       end
 
@@ -172,11 +167,16 @@ module Liquid
       @variable_name_expr = variable_name ? parse_expression(variable_name) : nil
       @template_name_expr = parse_expression(template_name)
       @is_for_loop = (with_or_for == FOR)
-      @inherit_context = markup.include?('...')
 
       @attributes = {}
-      markup.scan(TagAttributes) do |key, value|
-        @attributes[key] = parse_expression(value)
+      markup.scan(/(#{ContextInheritance})|#{TagAttributes.source}/) do |context_marker, key, value|
+        if context_marker
+          @attributes.delete("...")
+          @attributes["..."] = true
+        elsif key && value
+          @attributes.delete(key)
+          @attributes[key] = parse_expression(value)
+        end
       end
     end
 
